@@ -449,7 +449,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public void commit() throws JMSException {
-        logger.trace("commit transaction on session {}", this);
+        logger.info("[RMQSession::commit] commit transaction on session {}", this);
         illegalStateExceptionIfClosed();
         if (!this.transacted) throw new IllegalStateException("Session is not transacted");
         if (this.enterCommittingBlock()) {
@@ -472,7 +472,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public void rollback() throws JMSException {
-        logger.trace("rollback transaction on session {}", this);
+        logger.info("[RMQSession::rollback] rollback transaction on session {}", this);
         illegalStateExceptionIfClosed();
         if (!this.transacted) throw new IllegalStateException("Session is not transacted");
         if (this.enterCommittingBlock()) {
@@ -537,7 +537,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
 
     void internalClose() throws JMSException {
         if (this.closed) return;
-        logger.trace("close session {}", this);
+        logger.info("[RMQSession::internalClose] close session {}", this);
 
         synchronized (this.closeLock) {
             try {
@@ -673,7 +673,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public MessageProducer createProducer(Destination destination) throws JMSException {
-        logger.trace("create producer for destination '{}' on session '{}'", destination, this);
+        logger.info("[RMQSession::createProducer] create producer for destination '{}' on session '{}'", destination, this);
         illegalStateExceptionIfClosed();
         RMQDestination dest = (RMQDestination) destination;
         declareDestinationIfNecessary(dest);
@@ -686,8 +686,10 @@ public class RMQSession implements Session, QueueSession, TopicSession {
     void declareDestinationIfNecessary(RMQDestination destination) throws JMSException {
         if (destination != null && !destination.isAmqp() && !destination.isDeclared()) {
             if (destination.isQueue()) {
+                logger.info("[RMQSession::declareDestinationIfNecessary] declareRMQQueue for destination '{}' on session '{}'", destination, this);
                 declareRMQQueue(destination, null, false, true);
             } else {
+                logger.info("[RMQSession::declareDestinationIfNecessary] declareTopic for destination '{}' on session '{}'", destination, this);
                 declareTopic(destination);
             }
         }
@@ -698,8 +700,15 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public MessageConsumer createConsumer(Destination destination) throws JMSException {
+        logger.info("[RMQSession::createConsumer] create consumer for destination '{}' on session '{}'", destination, this);
         illegalStateExceptionIfClosed();
-        return createConsumerInternal((RMQDestination) destination, null, false, null);
+        RMQDestination rmqDestination = null;
+        if (!(destination instanceof RMQDestination)) {
+            rmqDestination = convertorToRMQDestination(destination);
+        } else {
+            rmqDestination = (RMQDestination) destination;
+        }
+        return createConsumerInternal(rmqDestination, null, false, null);
     }
 
     /** All consumers on a session must be used all synchronously or all asynchronously */
@@ -730,7 +739,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     private RMQMessageConsumer createConsumerInternal(RMQDestination dest, String uuidTag, boolean durableSubscriber, String jmsSelector) throws JMSException {
         String consumerTag = uuidTag != null ? uuidTag : Util.generateUUID("jms-cons-");
-        logger.trace("create consumer for destination '{}' with consumerTag '{}' and selector '{}'", dest, consumerTag, jmsSelector);
+        logger.info("[RMQSession::createConsumerInternal] create consumer for destination '{}' with consumerTag '{}' and selector '{}'", dest, consumerTag, jmsSelector);
         declareDestinationIfNecessary(dest);
 
         if (!dest.isQueue()) {
@@ -810,15 +819,48 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public MessageConsumer createConsumer(Destination destination, String messageSelector) throws JMSException {
+        logger.info("[RMQSession::createConsumer] create consumer for destination '{}' with '{}' on session '{}'", destination, messageSelector, this);
+
         illegalStateExceptionIfClosed();
+
         if (nullOrEmpty(messageSelector)) {
             return createConsumer(destination);
         } else if (isTopic(destination)) {
-            return createConsumerInternal((RMQDestination) destination, null, false, messageSelector);
+            RMQDestination rmqDestination = null;
+            if (!(destination instanceof RMQDestination)) {
+                rmqDestination = convertorToRMQDestination(destination);
+            } else {
+                rmqDestination = (RMQDestination) destination;
+            }
+            return createConsumerInternal(rmqDestination, null, false, messageSelector);
         } else {
             // selectors are not supported for queues
             throw new UnsupportedOperationException();
         }
+    }
+
+    private RMQDestination convertorToRMQDestination(Destination destination) throws JMSException {
+        logger.info("[RMQSession::convertorToRMQDestination] convert '{}' on session '{}'", destination, this);
+
+        String name = "";
+        boolean isQueue = false;
+        boolean temporary = false;
+
+        if (destination instanceof Queue) {
+            isQueue = true;
+            name = ((Queue) destination).getQueueName();
+        } else if (destination instanceof Topic) {
+            name = ((Topic) destination).getTopicName();
+        } else {
+            throw new UnsupportedOperationException();
+        }
+
+        if (destination instanceof TemporaryQueue || destination instanceof TemporaryTopic) {
+            temporary = true;
+        }
+        
+        RMQDestination rmqDestination = new RMQDestination(name, isQueue, temporary);
+        return rmqDestination;
     }
 
     private static boolean nullOrEmpty(String str) {
@@ -826,7 +868,15 @@ public class RMQSession implements Session, QueueSession, TopicSession {
     }
 
     private static boolean isTopic(Destination destination) {
-        return !((RMQDestination) destination).isQueue();
+        if (destination instanceof RMQDestination) {
+            return !((RMQDestination) destination).isQueue();
+        }
+        
+        if (destination instanceof Topic) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -835,13 +885,15 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public MessageConsumer createConsumer(Destination destination, String messageSelector, boolean noLocal) throws JMSException {
+        logger.info("[RMQSession::createConsumer] create consumer '{}' with '{}' on session '{}'", destination, messageSelector, this);
         illegalStateExceptionIfClosed();
         if (nullOrEmpty(messageSelector)) {
             RMQMessageConsumer consumer = (RMQMessageConsumer)createConsumer(destination);
             consumer.setNoLocal(noLocal);
             return consumer;
         } else if (isTopic(destination)) {
-            RMQMessageConsumer consumer = createConsumerInternal((RMQDestination) destination, null, false, messageSelector);
+            RMQDestination rmqDestination = convertorToRMQDestination(destination);
+            RMQMessageConsumer consumer = createConsumerInternal(rmqDestination, null, false, messageSelector);
             consumer.setNoLocal(noLocal);
             return consumer;
         }  else {
@@ -855,6 +907,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public Queue createQueue(String queueName) throws JMSException {
+        logger.info("[RMQSession::createQueue] create queue '{}' on session '{}'", queueName, this);
         illegalStateExceptionIfClosed();
         RMQDestination dest = new RMQDestination(queueName, true, false);
         declareRMQQueue(dest, null, false, true);
@@ -870,7 +923,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @throws JMSException if an IOException occurs in the {@link Channel#queueDeclare(String, boolean, boolean, boolean, java.util.Map)} call
      */
     private void declareRMQQueue(RMQDestination dest, String queueNameOverride, boolean durableSubscriber, boolean bind) throws JMSException {
-        logger.trace("declare RabbitMQ queue for destination '{}', explicitName '{}', durableSubscriber={}", dest, queueNameOverride, durableSubscriber);
+        logger.info("[RMQSession::createProducer] declare RabbitMQ queue for destination '{}', explicitName '{}', durableSubscriber={}", dest, queueNameOverride, durableSubscriber);
         String queueName = queueNameOverride!=null ? queueNameOverride : dest.getQueueName();
 
         String exchangeName = dest.getAmqpExchangeName();
@@ -896,7 +949,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
                 logger.warn("no need to declare built-in exchange for queue destination '{}'", dest);
             }
             else {
-                logger.trace("declare RabbitMQ exchange for queue destinations '{}'", dest);
+                logger.info("[RMQSession::declareRMQQueue] declare RabbitMQ exchange for queue destinations '{}'", dest);
                 try {
                     this.channel.exchangeDeclare(exchangeName, exchangeType, durable,
                                                  false, // autoDelete
@@ -952,6 +1005,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public Topic createTopic(String topicName) throws JMSException {
+        logger.info("[RMQSession::createTopic] create topic '{}' on session '{}'", topicName, this);
         illegalStateExceptionIfClosed();
         RMQDestination dest = new RMQDestination(topicName, false, false);
         declareTopic(dest);
@@ -968,7 +1022,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
             logger.warn("no need to declare built-in exchange for topic destination '{}'", dest);
         }
         else {
-            logger.trace("declare RabbitMQ exchange for topic destination '{}'", dest);
+            logger.info("[RMQSession::declareTopic] declare RabbitMQ exchange for topic destination '{}'", dest);
             try {
                 this.channel.exchangeDeclare(/* the name of the exchange */
                                              dest.getAmqpExchangeName(),
@@ -995,6 +1049,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TopicSubscriber createDurableSubscriber(Topic topic, String name) throws JMSException {
+        logger.info("[RMQSession::createDurableSubscriber] create topic '{}' with '{}' on session '{}'", topic, name, this);
         return createDurableSubscriber(topic, name, null, false);
     }
 
@@ -1003,6 +1058,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TopicSubscriber createDurableSubscriber(Topic topic, String name, String messageSelector, boolean noLocal) throws JMSException {
+        logger.info("[RMQSession::createDurableSubscriber] create topic '{}' with '{}' and '{}' on session '{}'", topic, name, messageSelector, this);
         illegalStateExceptionIfClosed();
 
         RMQDestination topicDest = (RMQDestination) topic;
@@ -1037,6 +1093,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public QueueBrowser createBrowser(Queue queue) throws JMSException {
+        logger.info("[RMQSession::createBrowser] create browser '{}' on session '{}'", queue, this);
         illegalStateExceptionIfClosed();
         return createBrowser(queue, null);
     }
@@ -1046,6 +1103,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public QueueBrowser createBrowser(Queue queue, String messageSelector) throws JMSException {
+        logger.info("[RMQSession::createBrowser] create browser '{}' with '{}' on session '{}'", queue, messageSelector, this);
         illegalStateExceptionIfClosed();
         if (queue instanceof RMQDestination) {
             RMQDestination rmqDest = (RMQDestination) queue;
@@ -1063,6 +1121,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @throws JMSException if channel not available
      */
     Channel getBrowsingChannel() throws JMSException {
+        logger.info("[RMQSession::getBrowsingChannel] get browsing channel on session '{}'", this);
         try {
             synchronized (this.bcLock) {
                 Channel chan = this.getConnection().createRabbitChannel(false); // not transactional
@@ -1078,6 +1137,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * Silently close and discard browsing channels, if any.
      */
     private void clearBrowsingChannels() {
+        logger.info("[RMQSession::clearBrowsingChannels] clear browsing channel on session '{}'", this);
         synchronized (this.bcLock) {
             for (Channel chan : this.browsingChannels) {
                 try {
@@ -1095,6 +1155,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * Close a specific browsing channel.
      */
     void closeBrowsingChannel(Channel chan) {
+        logger.info("[RMQSession::closeBrowsingChannel] close browsing channel on session '{}'", this);
         try {
             synchronized (this.bcLock) {
                 if (this.browsingChannels.remove(chan)) {
@@ -1113,6 +1174,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TemporaryQueue createTemporaryQueue() throws JMSException {
+        logger.info("[RMQSession::createTemporaryQueue] create temporary queue on session '{}'", this);
         illegalStateExceptionIfClosed();
         return new RMQDestination(Util.generateUUID("jms-temp-queue-"), true, true);
     }
@@ -1122,6 +1184,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TemporaryTopic createTemporaryTopic() throws JMSException {
+        logger.info("[RMQSession::createTemporaryTopic] create temporary topic on session '{}'", this);
         illegalStateExceptionIfClosed();
         return new RMQDestination(Util.generateUUID("jms-temp-topic-"), false, true);
     }
@@ -1132,6 +1195,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public void unsubscribe(String name) throws JMSException {
+        logger.info("[RMQSession::unsubscribe] unsubscribe on session '{}'", this);
         illegalStateExceptionIfClosed();
         try {
             if (name != null && this.subscriptions.remove(name) != null) {
@@ -1151,6 +1215,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public QueueReceiver createReceiver(Queue queue) throws JMSException {
+        logger.info("[RMQSession::createReceiver] create receiver on session '{}'", this);
         illegalStateExceptionIfClosed();
         return (QueueReceiver) this.createConsumer(queue);
     }
@@ -1160,6 +1225,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public QueueReceiver createReceiver(Queue queue, String messageSelector) throws JMSException {
+        logger.info("[RMQSession::createReceiver] create receiver '{}' with '{}' on session '{}'", queue, messageSelector, this);
         illegalStateExceptionIfClosed();
         return (QueueReceiver) this.createConsumer(queue, messageSelector);
     }
@@ -1172,6 +1238,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public QueueSender createSender(Queue queue) throws JMSException {
+        logger.info("[RMQSession::createSender] create receiver '{}' on session '{}'", queue, this);
         illegalStateExceptionIfClosed();
         return (QueueSender) this.createProducer(queue);
     }
@@ -1181,6 +1248,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TopicSubscriber createSubscriber(Topic topic) throws JMSException {
+        logger.info("[RMQSession::createSubscriber] create receiver '{}' on session '{}'", topic, this);
         illegalStateExceptionIfClosed();
         return (TopicSubscriber) this.createConsumer(topic);
     }
@@ -1190,6 +1258,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TopicSubscriber createSubscriber(Topic topic, String messageSelector, boolean noLocal) throws JMSException {
+        logger.info("[RMQSession::createSubscriber] create receiver '{}' with '{}' on session '{}'", topic, messageSelector, this);
         illegalStateExceptionIfClosed();
         RMQMessageConsumer consumer = createConsumerInternal((RMQDestination) topic, null, false, messageSelector);
         consumer.setNoLocal(noLocal);
@@ -1201,6 +1270,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      */
     @Override
     public TopicPublisher createPublisher(Topic topic) throws JMSException {
+        logger.info("[RMQSession::createPublisher] create receiver '{}' on session '{}'", topic, this);
         illegalStateExceptionIfClosed();
         return (TopicPublisher) this.createProducer(topic);
     }
@@ -1210,6 +1280,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @return
      */
     RMQConnection getConnection() {
+        logger.info("[RMQSession::getConnection] get connection on session '{}'", this);
         return this.connection;
     }
 
@@ -1218,10 +1289,12 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @return
      */
     Channel getChannel() {
+        logger.info("[RMQSession::getChannel] get channel on session '{}'", this);
         return this.channel;
     }
 
     void consumerClose(RMQMessageConsumer consumer) throws JMSException {
+        logger.info("[RMQSession::consumerClose] consumer close '{}' on session '{}'", consumer, this);
         if (this.consumers.remove(consumer)) {
             //TODO: if (consumer.isDurable()) { don't cancel it? cancel it? -- decide }
             consumer.internalClose();
@@ -1229,12 +1302,14 @@ public class RMQSession implements Session, QueueSession, TopicSession {
     }
 
     void removeProducer(RMQMessageProducer producer) {
+        logger.info("[RMQSession::removeProducer] remove producer '{}' on session '{}'", producer, this);
         if (this.producers.remove(producer)) {
             producer.internalClose();
         }
     }
 
     boolean isAutoAck() {
+        logger.info("[RMQSession::isAutoAck] is auto ack on session '{}'", this);
         return (getAcknowledgeModeNoException()!=Session.CLIENT_ACKNOWLEDGE);  // only case when auto ack not required
     }
 
@@ -1247,6 +1322,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @throws javax.jms.JMSException if the thread is interrupted
      */
     void pause() throws JMSException {
+        logger.info("[RMQSession::pause] pause on session '{}'", this);
         for (RMQMessageConsumer consumer : this.consumers) {
             try {
                 consumer.pause();
@@ -1269,6 +1345,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @throws javax.jms.JMSException if the thread is interrupted
      */
     void resume() throws JMSException {
+        logger.info("[RMQSession::resume] resume on session '{}'", this);
         for (RMQMessageConsumer consumer : this.consumers) {
             try {
                 consumer.resume();
@@ -1279,6 +1356,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
     }
 
     void unackedMessageReceived(long dTag) {
+        logger.info("[RMQSession::unackedMessageReceived] unackedMessageReceived on session '{}'", this);
         if (!getTransactedNoException()) {
             synchronized (this.unackedMessageTags) {
                 this.unackedMessageTags.add(dTag);
@@ -1292,6 +1370,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
      * @param message - the message to be acknowledged, or the carrier to acknowledge all messages
      */
     void acknowledgeMessage(RMQMessage message) throws JMSException {
+        logger.info("[RMQSession::acknowledgeMessage] acknowledgeMessage on session '{}'", this);
         illegalStateExceptionIfClosed();
 
         boolean individualAck = this.getIndividualAck();
@@ -1340,10 +1419,12 @@ public class RMQSession implements Session, QueueSession, TopicSession {
     }
 
     private final boolean getIndividualAck() {
+        logger.info("[RMQSession::getIndividualAck] getIndividualAck on session '{}'", this);
         return this.isIndividualAck;
     }
 
     void addUncommittedTag(long deliveryTag) {
+        logger.info("[RMQSession::addUncommittedTag] addUncommittedTag on session '{}'", this);
         if (this.nackOnRollback && this.getTransactedNoException()) {
             if (this.enterCommittingBlock()) {
                 this.uncommittedMessageTags.add(deliveryTag);
@@ -1353,6 +1434,7 @@ public class RMQSession implements Session, QueueSession, TopicSession {
     }
 
     private void clearUncommittedTags() {
+        logger.info("[RMQSession::clearUncommittedTags] clearUncommittedTags on session '{}'", this);
         if (this.nackOnRollback) {
             this.uncommittedMessageTags.clear();
         }
